@@ -1,7 +1,7 @@
 Based on the kernel module in linux 4.9
 
 This is a very dirty hack to be able to set the external interrupt pin (SQW)
-of the DS1307 RTC chip
+of the DS1307 RTC chip. **It is only tested on a Raspberry Pi rev 2**
 
 It creates a character device at /dev/ds1307/sqw which can be opened and the
 following ioctl calls are supported:
@@ -18,5 +18,3 @@ following ioctl calls are supported:
   - 01b (0x01): 4096Hz
   - 10b (0x02): 8092Hz
   - 11b (0x03): 32768Hz
-
-Main project is located at https://git.home.gnodde.org/nerdman/rtc-ds1307.git
