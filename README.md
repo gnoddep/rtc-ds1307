@@ -18,3 +18,5 @@ following ioctl calls are supported:
   - 01b (0x01): 4096Hz
   - 10b (0x02): 8092Hz
   - 11b (0x03): 32768Hz
+
+Main project is located at https://git.home.gnodde.org/nerdman/rtc-ds1307.git
