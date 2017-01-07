@@ -24,6 +24,8 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/clk-provider.h>
 
+#include "ds1307.h"
+
 /*
  * We can't determine type by probing, but if we expect pre-Linux code
  * to have set the chip up as a clock (turning on the oscillator and
@@ -1263,6 +1265,153 @@ static void ds1307_clks_register(struct ds1307 *ds1307)
 
 #endif /* CONFIG_COMMON_CLK */
 
+struct ds1307_char_dev {
+    char name[32];
+    struct ds1307 *device;
+    int open;
+};
+static struct class *ds1307_class;
+static struct ds1307_char_dev ds1307_char_dev = {
+    .name = "ds1307",
+    .open = 0,
+    .device = NULL,
+};
+
+static int ds1307_device_open(struct inode *inode, struct file *file)
+{
+    if (ds1307_char_dev.open) {
+        return -EBUSY;
+    }
+
+    ds1307_char_dev.open = 1;
+
+    try_module_get(THIS_MODULE);
+    return 0;
+}
+
+static int ds1307_device_release(struct inode *inode, struct file *file)
+{
+    ds1307_char_dev.open = 0;
+    module_put(THIS_MODULE);
+    return 0;
+}
+
+static long ds1307_device_ioctl(struct file *file, unsigned int command,
+        unsigned long parameter
+) {
+	struct i2c_client *client;
+	struct mutex *lock;
+	unsigned int control;
+	int ret = 0;
+    void __user *user_parameter = (void __user *)parameter;
+
+    client = ds1307_char_dev.device->client;
+	lock = &ds1307_char_dev.device->rtc->ops_lock;
+
+	mutex_lock(lock);
+
+	control = i2c_smbus_read_byte_data(client, DS1307_REG_CONTROL);
+	if (control < 0) {
+		ret = control;
+		goto out;
+	}
+
+    if (command == DS1307_ENABLE_SQW) {
+        printk("DS1307: enable SQW at %dHz\n", (int)parameter);
+        control &= ~(DS1307_BIT_SQWE | 0x03);
+
+        control |= DS1307_BIT_SQWE;
+
+        if (parameter == 1) {
+        } else if (parameter == 4096) {
+            control |= 0x01;
+        } else if (parameter == 8096) {
+            control |= 0x02;
+        } else if (parameter == 32768) {
+            control |= 0x03;
+        } else {
+            ret = -EINVAL;
+            goto out;
+        }
+    } else if (command == DS1307_DISABLE_SQW) {
+        printk("DS1307: disable SQW\n");
+	    control &= ~(DS1307_BIT_SQWE | 0x03);
+    } else if (command == DS1307_SQW_STATUS) {
+        printk("SQW status: %08x\n", control);
+        if (copy_to_user(user_parameter, &control, sizeof(unsigned long))) {
+            ret = -EFAULT;
+        }
+
+        goto out;
+    } else {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    printk("Writing DS1307 control register: %08x\n", control);
+	ret = i2c_smbus_write_byte_data(client, DS1307_REG_CONTROL, control);
+
+out:
+	mutex_unlock(lock);
+
+	return ret;
+}
+
+static const struct file_operations ds1307_fops = {
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = ds1307_device_ioctl,
+    .open = ds1307_device_open,
+    .release = ds1307_device_release,
+};
+
+static char *ds1307_devnode(struct device *dev, umode_t *mode)
+{
+    return kasprintf(GFP_KERNEL, "%s/sqw", dev_name(dev));
+}
+
+static int ds1307_register_character_device(struct ds1307 *ds1307)
+{
+    int ret;
+
+    if (ds1307->type != ds_1307) {
+        return -EINVAL;
+    }
+
+    ds1307_char_dev.device = ds1307;
+
+    printk("Making device: %s\n", ds1307_char_dev.name);
+    printk("enable 0x%08x\n", DS1307_ENABLE_SQW);
+    printk("disable 0x%08x\n", DS1307_DISABLE_SQW);
+    printk("status 0x%08x\n", DS1307_SQW_STATUS);
+
+    ret = register_chrdev(DS1307_MAJOR_NUM, ds1307_char_dev.name,
+            &ds1307_fops);
+    if (ret) {
+        printk("Could not get major %d for ds1307 character device\n",
+                DS1307_MAJOR_NUM);
+        return ret;
+    }
+
+    ds1307_class = class_create(THIS_MODULE, "ds1307");
+    if (IS_ERR(ds1307_class)) {
+        unregister_chrdev(DS1307_MAJOR_NUM, "ds1307");
+        return PTR_ERR(ds1307_class);
+    }
+    ds1307_class->devnode = ds1307_devnode;
+
+    device_create(ds1307_class, NULL, MKDEV(DS1307_MAJOR_NUM, 0), NULL,
+            ds1307_char_dev.name);
+
+    return 0;
+}
+
+static void ds1307_clean_up_char_devs(void)
+{
+    device_destroy(ds1307_class, MKDEV(DS1307_MAJOR_NUM, 0));
+    class_destroy(ds1307_class);
+    unregister_chrdev(DS1307_MAJOR_NUM, ds1307_char_dev.name);
+}
+
 static int ds1307_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
@@ -1660,6 +1809,10 @@ read_rtc:
 	ds1307_hwmon_register(ds1307);
 	ds1307_clks_register(ds1307);
 
+    if (ds1307->type == ds_1307) {
+        return ds1307_register_character_device(ds1307);
+    }
+
 	return 0;
 
 exit:
@@ -1672,6 +1825,9 @@ static int ds1307_remove(struct i2c_client *client)
 
 	if (test_and_clear_bit(HAS_NVRAM, &ds1307->flags))
 		sysfs_remove_bin_file(&client->dev.kobj, ds1307->nvram);
+
+    if (ds1307->type == ds_1307)
+        ds1307_clean_up_char_devs();
 
 	return 0;
 }
