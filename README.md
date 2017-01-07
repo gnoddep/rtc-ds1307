@@ -18,3 +18,39 @@ following ioctl calls are supported:
   - 01b (0x01): 4096Hz
   - 10b (0x02): 8092Hz
   - 11b (0x03): 32768Hz
+
+To install, make sure you have a decent build environment, the following
+instructions are for the Raspberry Pi
+
+```bash
+# Make sure you have the latest kernel and sources:
+$ rpi-update            # sudo apt-get install rpi-update
+$ rpi-source            # https://github.com/notro/rpi-source
+
+$ make
+$ sudo make install
+$ sudo depmod           # Because somehow make install did not do this correctly
+
+# Disable loading of the original rtc_ds1307 module
+$ sudo echo "blacklist rtc_ds1307" >/etc/modprobe.d/rtc.conf
+
+# Make sure the rtc and this module are loaded at boottime
+sudo echo "dtoverlay=i2c-rtc,ds1307" >>/boot/config
+
+# If you have already loaded the original rtc_ds1307 module
+sudo rmmod rtc_ds1307
+
+# Load the module
+modprobe rtc_ds1307_nerdman
+```
+
+If you want to allow access to the `/dev/rtc*` and `/dev/ds1307/sqw` devices by
+non-root users, use the following udev rules and add the user to the `rtc` group
+
+```bash
+cat >/etc/udev/rules.d/99-rtc.rules <<EOF
+SUBSYSTEM=="rtc", GROUP="rtc", MODE="0660"
+SUBSYSTEM=="ds1307", GROUP="rtc", MODE="0660"
+EOF
+```
+
